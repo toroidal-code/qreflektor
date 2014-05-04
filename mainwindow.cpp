@@ -23,28 +23,6 @@
 **          Version: 1.2.1                                                **
 ****************************************************************************/
 
-/************************************************************************************************************
-** **
-**  This is the example code for QCustomPlot. **
-** **
-**  It demonstrates basic and some advanced capabilities of the widget. The
-*interesting code is inside     **
-**  the "setup(...)Demo" functions of MainWindow. **
-** **
-**  In order to see a demo in action, call the respective "setup(...)Demo"
-*function inside the             **
-**  MainWindow constructor. Alternatively you may call setupDemo(i) where i is
-*the index of the demo       **
-**  you want (for those, see MainWindow constructor comments). All other
-*functions here are merely a       **
-**  way to easily create screenshots of all demos for the website. I.e. a timer
-*is set to successively     **
-**  setup all the demos and make a screenshot of the window area and save it in
-*the ./screenshots          **
-**  directory. **
-** **
-*************************************************************************************************************/
-
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -57,6 +35,8 @@
 #include <iostream>
 #include <sys/time.h>
 
+#include <vector>
+
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include <QDebug>
@@ -64,6 +44,10 @@
 #include <QScreen>
 #include <QMessageBox>
 #include <QMetaEnum>
+
+#define NUM_BINS 6
+
+using namespace std;
 
 /*
 ** Note that many of the older ISA sound cards on PCs do NOT support
@@ -216,7 +200,7 @@ void MainWindow::setupBarChart(QCustomPlot *customPlot) {
     // prepare y axis:
   customPlot->yAxis->setRange(0, 65);
   customPlot->yAxis->setPadding(5); // a bit more space to the left border
-  customPlot->yAxis->setLabel("Power?");
+  customPlot->yAxis->setLabel("DB");
   customPlot->yAxis->grid()->setSubGridVisible(true);
   QPen gridPen;
   gridPen.setStyle(Qt::SolidLine);
@@ -240,33 +224,52 @@ void MainWindow::setupBarChart(QCustomPlot *customPlot) {
   dataTimer.start(0); // Interval 0 means to refresh as fast as possible
 }
 
+double average(vector<float> &v) {
+  double sum = std::accumulate(std::begin(v), std::end(v), 0.0);
+  return sum / v.size();
+}
+
 void MainWindow::realtimeDataSlot() {
   double key = QDateTime::currentDateTime().toMSecsSinceEpoch() / 1000.0;
-  // create empty bar chart objects:
+
+  // get bar chart
   QCPBars* fossil = static_cast<QCPBars*>(ui->customPlot->plottable(0));
-  fossil->clearData();
+  fossil->clearData(); // clear the current data
 
   // prepare x axis with country labels:
   QVector<double> ticks;
 
   // Add data:
-  QVector<double> fossilData;
-  
-  for (uint i = 1; i < (FRAMES_PER_BUFFER / 8) - 1; i++) {
-    ticks << (i * SAMPLE_RATE / FRAMES_PER_BUFFER);
-    fossilData << abs(left_out[i][0]);
+  vector<float> tempdata;
+  for (uint i = 2; i < (FRAMES_PER_BUFFER / 8) - 1; i++) {
+    //ticks << (i * SAMPLE_RATE / FRAMES_PER_BUFFER);
 //           right_out[i][0]);
+    tempdata.push_back(abs(left_out[i][0]));
   }
 
-  fossil->setData(ticks, fossilData);
-  fossil->rescaleKeyAxis();
-  ui->customPlot->replot();
+  QVector<double> data;
+  
+  uint i =2;
+  for (auto it = tempdata.begin(); !(it >= tempdata.end()); it+=16) { 
+    vector<float> temp(it,it+16); 
+    ticks << (i * SAMPLE_RATE / FRAMES_PER_BUFFER);
+    i+=16;
+    data << average(temp);
+  } 
+  
+
+
+  fossil->setData(ticks, data);  // add the new data
+  fossil->rescaleKeyAxis();      // scale the X axis
+  ui->customPlot->replot();      // redraw
+
+
   // calculate frames per second:
   static double lastFpsKey;
   static int frameCount;
   ++frameCount;
-  if (key - lastFpsKey > 2) // average fps over 2 seconds
-  {
+  // average fps over 2 seconds
+  if (key - lastFpsKey > 2) {
     ui->statusBar->showMessage(
         QString("%1 FPS").arg(frameCount / (key - lastFpsKey), 0, 'f', 0),0);
     lastFpsKey = key;
