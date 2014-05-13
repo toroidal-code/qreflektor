@@ -38,8 +38,10 @@
 #include <numeric>
 
 #include <vector>
+#include <array>
 #include <thread>
 #include <mutex>
+
 #include "mainwindow.h"
 #include "ui_mainwindow.h"
 #include <QDebug>
@@ -59,7 +61,7 @@ using namespace std;
 */
 #define SAMPLE_RATE (44100)
 #define PA_SAMPLE_TYPE paFloat32 | paNonInterleaved;
-#define FRAMES_PER_BUFFER (1024)
+#define FRAMES_PER_BUFFER (4096)
 #define PORT 7681
 
 double gInOutScaler = 1.0;
@@ -89,16 +91,21 @@ static const float omf[] =
 // 1/3 octave middle frequency array
 static const float tomf[] =
 { 15.6, 19.7, 24.8, 31.3, 39.4, 49.6, 62.5, 78.7, 99.2,
-  125, 157.5, 198.4, 250, 315, 396.9, 500, 630, 793.7,
-  1000, 1259.9, 1587.4, 2000, 2519.8, 3174.8, 4000, 5039.7,
-  6349.6, 8000, 10079.4, 12699.2, 16000, 20158.7};
+  125.0, 157.5, 198.4, 250, 315, 396.9, 500.0, 630, 793.7,
+  1000.0, 1259.9, 1587.4, 2000, 2519.8, 3174.8, 4000.0, 5039.7,
+  6349.6, 8000.0, 10079.4, 12699.2, 16000.0, 20158.7};
 
 static float lbtomf[32] = {0};
 static float ubtomf[32] = {0};
 
 template <typename T, class C>
 inline T average(C &c) {
-  return accumulate(c.begin(), c.end(), 0.0) / c.size();
+    float a = 0;
+    float scalar = (c.size() / 48.0);
+    for (auto b : c) {
+        a += b * (scalar < 1 ? 1 : scalar);
+    }
+  return a / c.size();
 }
 
 
@@ -120,7 +127,7 @@ inline float upper_freq_bound(float mid, float band){
 }
 
 inline float lower_freq_bound(float mid, float band){
-    return mid * pow(sqrt(2), 1.0/band);
+    return mid / pow(sqrt(2), 1.0/band);
 }
 
 void populate_bound_arrays(){
@@ -134,7 +141,7 @@ void populate_bound_arrays(){
 // Instead of an O(N) lookup
 int get_octave_bin(float freq) {
     for (int i = 0; i < 3 * 11; i++) {
-        if (lbtomf[i] < freq && freq <= ubtomf[i]) {
+        if (lbtomf[i] <= freq && freq < ubtomf[i]) {
             return i;
         }
     }
@@ -142,23 +149,9 @@ int get_octave_bin(float freq) {
 }
 
 template <typename T>
-inline array<T, sizeof(tomf) / sizeof(float)>
-bin_freqs_to_octaves(array<T, FRAMES_PER_BUFFER> freqs) {
-    array<vector<T>, sizeof(tomf) / sizeof(float)> octave_bins;
-    array<T, sizeof(tomf) / sizeof(float)> octaves;
-    
-    for (uint i = 1; i < (FRAMES_PER_BUFFER / 2) - 1; i++) {
-        float freq = (i * SAMPLE_RATE / FRAMES_PER_BUFFER);
-        auto octave = get_octave_bin(freq);
-        octave_bins[octave] = freqs[i];
-    }
-    
-    for (uint i = 0; i < octave_bins.size(); i++) {
-        T averaged = average<T>(octave_bins[i]);
-        T gained = gain<T>(3, averaged, tomf[i]);
-        octaves[i] = gained;
-    }
-    return octaves;
+vector<T>
+bin_freqs_to_octaves(array<T, FRAMES_PER_BUFFER> &freqs) {
+
 }
 
 static void fftwProcess(const void *inputBuffer) {
@@ -346,17 +339,6 @@ void MainWindow::realtimeDataSlot() {
   QCPBars* fossil = static_cast<QCPBars*>(ui->customPlot->plottable(0));
   fossil->clearData(); // clear the current data
 
-  // prepare x axis with country labels:
-  QVector<double> ticks;
-
-  // Add data:
-  QVector<double> tempdata;
-  for (uint i = 1; i < (FRAMES_PER_BUFFER / 2) - 1; i++) {
-    ticks << (i * SAMPLE_RATE / FRAMES_PER_BUFFER);
-//           right_out[i][0]);
-    tempdata.push_back(abs(left_out[i][0]));
-  }
-
 //  vector<double> octaves;
 //  // 0 is DC freq (O Hz)
 //  // n/2 is nyquist freq
@@ -367,7 +349,33 @@ void MainWindow::realtimeDataSlot() {
 //    tempdata.push_back();
 //  }
 
-  //QVector<double> data;
+    vector<vector<float>> octave_bins(32);
+    vector<float> octaves;
+    
+    for (uint i = 2; i < (FRAMES_PER_BUFFER / 2) - 1; i++) {
+        float freq = (i * SAMPLE_RATE / FRAMES_PER_BUFFER);
+        int octave = get_octave_bin(freq);
+        float gain_mult = gain<float>(3, freq, tomf[octave]);
+        float val = abs(left_out[i][0]);
+        octave_bins[octave].push_back(val * gain_mult);
+    }
+    
+    // prepare x axis with country labels:
+    QVector<double> ticks;
+    QVector<double> data;
+    uint i = 0;
+    for (vector<float> bin : octave_bins){
+        ticks << i++;
+        double averaged = average<double>(bin);
+        if (isnan(averaged)) {
+            data.push_back(0);
+        } else if (averaged > 60) {
+            data.push_back(60);
+        } else {
+            data.push_back(averaged);
+        }
+    }
+
   
 //  uint i =2;
 //  for (auto it = tempdata.begin(); !(it >= tempdata.end()); it+=2) {
@@ -379,7 +387,7 @@ void MainWindow::realtimeDataSlot() {
   
 
 
-  fossil->setData(ticks, tempdata);  // add the new data
+  fossil->setData(ticks, data);  // add the new data
   fossil->rescaleKeyAxis();      // scale the X axis
   ui->customPlot->replot();      // redraw
 
